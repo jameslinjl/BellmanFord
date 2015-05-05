@@ -76,7 +76,6 @@ def thread_update_paths():
                                 continue
                             for alt in other_table:
                                 cost = other_path[1] + alt[1]
-                                # print cost
                                 if alt[0] == node[0] and cost < min_cost:
                                     min_cost = cost
                                     min_step = other_path[0]
@@ -130,8 +129,16 @@ def handle_recv_packet(data):
 
         if updated and not dead:
             for neighbor in neighbors:
+
+                custom_dvs = []
+                for dv in dv_tables[HOSTNAME]:
+                    if dv[2] == neighbor[2]:
+                        custom_dvs.append((dv[0], sys.float_info.max, dv[2]))
+                    else:
+                        custom_dvs.append(dv)
+
                 send_packet(neighbor[0], 
-                    rt_packet.RTPacket('ROUTEUPDATE', HOSTNAME, my_dvs))
+                    rt_packet.RTPacket('ROUTEUPDATE', HOSTNAME, custom_dvs))
 
     if code == 'CHANGECOST':
         value = float(data_arr[2])
@@ -164,10 +171,15 @@ def timeout_function():
         # send to all neighbors
         for neighbor in neighbors:
             # adjust for poison reverse
-            # custom my_dvs based on how routing happens
-            # change what you report but not actual my_dvs
+            custom_dvs = []
+            for dv in dv_tables[HOSTNAME]:
+                if dv[2] == neighbor[2]:
+                    custom_dvs.append((dv[0], sys.float_info.max, dv[2]))
+                else:
+                    custom_dvs.append(dv)
+
             send_packet(neighbor[0], 
-                rt_packet.RTPacket('ROUTEUPDATE', HOSTNAME, my_dvs))
+                rt_packet.RTPacket('ROUTEUPDATE', HOSTNAME, custom_dvs))
 
     t = threading.Thread(target=timeout_function)
     t.daemon = True
@@ -190,7 +202,6 @@ def send_packet(destination, packet):
     dest_ip_port = destination.split(':')
     sock.sendto(str(packet), (dest_ip_port[0], int(dest_ip_port[1])))
     sock.close()
-    # actually send the stuff
 
 
 # changes a dv to a certain value, avoids race conditions
@@ -208,18 +219,6 @@ def thread_change_dv(dv_to_change, new_value, new_link=''):
                     new_dv = (dv_to_change, new_value, new_link)
                 my_dvs.remove(dv)
                 my_dvs.append(new_dv)
-    finally:
-        lock.release()
-
-# changes a dv to a certain value, avoids race conditions
-def thread_change_dv_row():
-    global lock
-    global dv_tables
-    global HOSTNAME
-    global neighbors
-    lock.acquire()
-    try:
-        dv_tables[HOSTNAME] = neighbors
     finally:
         lock.release()
 
@@ -329,11 +328,6 @@ def main():
     HOSTNAME = '127.0.0.1' + ':' + str(port)
 
     dv_tables[HOSTNAME] = my_dvs
-    # print dv_tables
-    # print ip_port
-    # print TIMEOUT
-    # print my_dvs
-    # print original_neighbors
 
     # launch the timeout thread
     t = threading.Thread(target=timeout_function)
@@ -437,11 +431,13 @@ def main():
 
             if in_original(dv) and not dead:
                 change_neighbor(dv, float(user_input[3]))
-                thread_change_dv_row()
                 send_packet(dv, rt_packet.RTPacket('CHANGECOST', HOSTNAME, 
                     value=float(user_input[3])))
             else:
                 print 'The host you entered is not your neighbor.'
+        elif user_input[0] == 'debug':
+            print dv_tables
+
 
 
 # ^C terminate gracefully
