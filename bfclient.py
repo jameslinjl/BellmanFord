@@ -129,6 +129,8 @@ def handle_recv_packet(data):
 
         if updated and not dead:
             for neighbor in neighbors:
+                if neighbor[3] == False:
+                    continue
 
                 custom_dvs = []
                 for dv in dv_tables[HOSTNAME]:
@@ -143,6 +145,12 @@ def handle_recv_packet(data):
     if code == 'CHANGECOST':
         value = float(data_arr[2])
         change_neighbor(sender, value)
+
+    if code == 'LINKDOWN':
+        destroy_neighbor_link(sender)
+
+    if code == 'LINKUP':
+        restore_neighbor_link(sender)
 
     return 0
 
@@ -170,6 +178,8 @@ def timeout_function():
     if not dead:
         # send to all neighbors
         for neighbor in neighbors:
+            if neighbor[3] == False:
+                continue
             # adjust for poison reverse
             custom_dvs = []
             for dv in dv_tables[HOSTNAME]:
@@ -224,14 +234,57 @@ def thread_change_dv(dv_to_change, new_value, new_link=''):
 
 # actual neighbors
 def change_neighbor(neighbor_to_change, new_value):
+    global lock
     global neighbors
+    ignore = False
+    lock.acquire()
+    try:
+        for neighbor in neighbors:
+            if neighbor[0] == neighbor_to_change:
+                if neighbor[3] == False:
+                    ignore = True
+                else:
+                    new_neighbor = (neighbor_to_change, new_value, 
+                        neighbor_to_change, True)
+                    neighbors.remove(neighbor)
+                    neighbors.append(new_neighbor)
+                break
+    finally:
+        lock.release()
+        return ignore
 
-    for neighbor in neighbors:
-        if neighbor[0] == neighbor_to_change:
-            new_neighbor = (neighbor_to_change, new_value, neighbor_to_change)
-            neighbors.remove(neighbor)
-            neighbors.append(new_neighbor)
-            break
+# down the link
+def destroy_neighbor_link(neighbors_link):
+    global lock
+    global neighbors
+    lock.acquire()
+    try:
+        for neighbor in neighbors:
+            if neighbor[0] == neighbors_link:
+                new_neighbor = (neighbor[0], sys.float_info.max, 
+                    neighbor[2], False)
+                neighbors.remove(neighbor)
+                neighbors.append(new_neighbor)
+                break
+    finally:
+        lock.release()
+
+# up the link
+def restore_neighbor_link(neighbors_link):
+    global lock
+    global neighbors
+    global original_neighbors
+    lock.acquire()
+    try:
+        for neighbor in neighbors:
+            if neighbor[0] == neighbors_link:
+                new_neighbor = (neighbor[0], original_neighbors[neighbors_link], 
+                    neighbor[2], True)
+                neighbors.remove(neighbor)
+                neighbors.append(new_neighbor)
+                break
+    finally:
+        lock.release()
 
 # find link value to neighbor
 def find_neighbor_value(neighbor_to_find):
@@ -321,7 +374,8 @@ def main():
             dest_cost = line.split()
             my_dvs.append((dest_cost[0], float(dest_cost[1]), dest_cost[0]))
             # neighbors.append((dest_cost[0], float(dest_cost[1])))
-            neighbors.append((dest_cost[0], float(dest_cost[1]), dest_cost[0]))
+            neighbors.append((dest_cost[0], float(dest_cost[1]), 
+                dest_cost[0], True))
             original_neighbors[dest_cost[0]] = float(dest_cost[1])
 
     # sock_name = socket.gethostbyname(socket.gethostname())
@@ -388,10 +442,11 @@ def main():
             dv = user_input[1] + ':' + user_input[2]
 
             if in_original(dv):
-                change_neighbor(dv, float('inf'))
-                # set any path using link to inf, if so send ROUTEUPDATE
-                # send LINKDOWN signal
-                # stop exchanging ROUTE UPDATE messages
+                # change_neighbor(dv, sys.float_info.max)
+                # stop sharing updates
+                destroy_neighbor_link(dv)
+                # send LINKDOWN
+                send_packet(dv, rt_packet.RTPacket('LINKDOWN', HOSTNAME))
             else:
                 print 'The host you entered is not your neighbor.'
         elif user_input[0] == 'CLOSE':
@@ -416,9 +471,8 @@ def main():
             dv = user_input[1] + ':' + user_input[2]
 
             if in_original(dv):
-                change_neighbor(dv, original_neighbors[dv])
-                # should send LINKUP message to destination
-                # resume sending ROUTEUPDATE messages
+                restore_neighbor_link(dv)
+                send_packet(dv, rt_packet.RTPacket('LINKUP', HOSTNAME))
             else:
                 print 'The host you entered is not your neighbor.'
         elif user_input[0] == 'CHANGECOST':
@@ -430,13 +484,16 @@ def main():
             dv = user_input[1] + ':' + user_input[2]
 
             if in_original(dv) and not dead:
-                change_neighbor(dv, float(user_input[3]))
-                send_packet(dv, rt_packet.RTPacket('CHANGECOST', HOSTNAME, 
-                    value=float(user_input[3])))
+                ignore = change_neighbor(dv, float(user_input[3]))
+                if not ignore:
+                    send_packet(dv, rt_packet.RTPacket('CHANGECOST', HOSTNAME, 
+                        value=float(user_input[3])))
             else:
                 print 'The host you entered is not your neighbor.'
-        elif user_input[0] == 'debug':
+        elif user_input[0] == 'table':
             print dv_tables
+        elif user_input[0] == 'neighbors':
+            print neighbors
 
 
 
