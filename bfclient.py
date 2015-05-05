@@ -62,23 +62,30 @@ def thread_update_paths():
                     updated = True
                 else:
                     # see what the potential path cost is
-                    new_path_cost = neighbor_cost + tup[1]
-                    least = 0
-                    table_record = ()
-                
-                    # go through and find the least cost thus far
+                    
                     for node in dv_tables[HOSTNAME]:
-                        if node[0] == tup[0]: 
-                            least = node[1]
-                            table_record = node
-                            break
-                
-                    # if new cost is less, then pick the new path path
-                    if new_path_cost < least:
-                        dv_tables[HOSTNAME].remove(table_record)
-                        dv_tables[HOSTNAME].append((tup[0], new_path_cost,
-                            host))
-                        updated = True
+                        original_cost = node[1]
+                        min_cost = find_neighbor_value(node[0])
+                        min_step = node[0]
+                        for other_path in dv_tables[HOSTNAME]:
+                            if other_path[0] == node[0]:
+                                continue
+                            try:
+                                other_table = dv_tables[other_path[0]]
+                            except Exception:
+                                continue
+                            for alt in other_table:
+                                cost = other_path[1] + alt[1]
+                                # print cost
+                                if alt[0] == node[0] and cost < min_cost:
+                                    min_cost = cost
+                                    min_step = other_path[0]
+
+                        if original_cost != min_cost:
+                            updated = True
+                            dv_tables[HOSTNAME].remove(node)
+                            dv_tables[HOSTNAME].append((node[0], min_cost,
+                                min_step))
                 
     finally:
         lock.release()
@@ -125,6 +132,10 @@ def handle_recv_packet(data):
             for neighbor in neighbors:
                 send_packet(neighbor[0], 
                     rt_packet.RTPacket('ROUTEUPDATE', HOSTNAME, my_dvs))
+
+    if code == 'CHANGECOST':
+        value = float(data_arr[2])
+        change_neighbor(sender, value)
 
     return 0
 
@@ -183,7 +194,7 @@ def send_packet(destination, packet):
 
 
 # changes a dv to a certain value, avoids race conditions
-def thread_change_dv_row(dv_to_change, new_value, new_link=''):
+def thread_change_dv(dv_to_change, new_value, new_link=''):
     global lock
     global my_dvs
     lock.acquire()
@@ -200,13 +211,28 @@ def thread_change_dv_row(dv_to_change, new_value, new_link=''):
     finally:
         lock.release()
 
+# changes a dv to a certain value, avoids race conditions
+def thread_change_dv_row():
+    global lock
+    global dv_tables
+    global HOSTNAME
+    global neighbors
+    lock.acquire()
+    try:
+        dv_tables[HOSTNAME] = neighbors
+    finally:
+        lock.release()
+
 # actual neighbors
 def change_neighbor(neighbor_to_change, new_value):
     global neighbors
 
     for neighbor in neighbors:
         if neighbor[0] == neighbor_to_change:
-            new_neighbor = (neighbor_to_change, new_value)
+            new_neighbor = (neighbor_to_change, new_value, neighbor_to_change)
+            neighbors.remove(neighbor)
+            neighbors.append(new_neighbor)
+            break
 
 # find link value to neighbor
 def find_neighbor_value(neighbor_to_find):
@@ -215,6 +241,7 @@ def find_neighbor_value(neighbor_to_find):
     for neighbor in neighbors:
         if neighbor[0] == neighbor_to_find:
             return neighbor[1]
+    return float('inf')
 
 # see if link is recorded
 def is_recorded(to_find):
@@ -294,7 +321,8 @@ def main():
         else:
             dest_cost = line.split()
             my_dvs.append((dest_cost[0], float(dest_cost[1]), dest_cost[0]))
-            neighbors.append((dest_cost[0], float(dest_cost[1])))
+            # neighbors.append((dest_cost[0], float(dest_cost[1])))
+            neighbors.append((dest_cost[0], float(dest_cost[1]), dest_cost[0]))
             original_neighbors[dest_cost[0]] = float(dest_cost[1])
 
     # sock_name = socket.gethostbyname(socket.gethostname())
@@ -407,8 +435,11 @@ def main():
 
             dv = user_input[1] + ':' + user_input[2]
 
-            if in_original(dv):
+            if in_original(dv) and not dead:
                 change_neighbor(dv, float(user_input[3]))
+                thread_change_dv_row()
+                send_packet(dv, rt_packet.RTPacket('CHANGECOST', HOSTNAME, 
+                    value=float(user_input[3])))
             else:
                 print 'The host you entered is not your neighbor.'
 
