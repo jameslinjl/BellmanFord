@@ -35,6 +35,7 @@ HOSTNAME = ''
 
 # update the paths, returns True if paths have actually been changed
 def thread_update_paths():
+    # print 'update paths'
     global lock
     global dv_tables
     global my_dvs
@@ -75,7 +76,8 @@ def thread_update_paths():
                             except Exception:
                                 continue
                             for alt in other_table:
-                                cost = other_path[1] + alt[1]
+                                cost = (find_neighbor_value(other_path[0]) + 
+                                    alt[1])
                                 if alt[0] == node[0] and cost < min_cost:
                                     min_cost = cost
                                     min_step = other_path[0]
@@ -123,6 +125,7 @@ def handle_recv_packet(data):
             if type(result) is tuple:
                 tup_row.append(result)
 
+        restore_neighbor_link(sender)
         thread_update_dv_tables(sender, tup_row)
         updated = thread_update_paths()
         my_dvs = dv_tables[HOSTNAME]
@@ -139,6 +142,7 @@ def handle_recv_packet(data):
                     else:
                         custom_dvs.append(dv)
 
+                # print 'send ROUTEUPDATE'        
                 send_packet(neighbor[0], 
                     rt_packet.RTPacket('ROUTEUPDATE', HOSTNAME, custom_dvs))
 
@@ -166,7 +170,7 @@ def listener_thread():
 
 
 # timeout function
-def timeout_function():
+def timeout_function(counter):
     global TIMEOUT
     global dead
     global neighbors
@@ -176,8 +180,16 @@ def timeout_function():
 
     # only send ROUTEUPDATE if alive
     if not dead:
+        to_destroy = []
         # send to all neighbors
         for neighbor in neighbors:
+            if neighbor[4] == False and counter == 3:
+                if neighbor[2] == 'DOWN':
+                    continue
+                # necessary because of iteration issues
+                to_destroy.append(neighbor[0])
+                continue
+            
             if neighbor[3] == False:
                 continue
             # adjust for poison reverse
@@ -191,7 +203,18 @@ def timeout_function():
             send_packet(neighbor[0], 
                 rt_packet.RTPacket('ROUTEUPDATE', HOSTNAME, custom_dvs))
 
-    t = threading.Thread(target=timeout_function)
+        # necessary because of iteration issues
+        if counter == 3:
+            counter = 0
+            for neighbor in to_destroy:
+                destroy_neighbor_link(neighbor)
+            to_change = []
+            for neighbor in neighbors:
+                to_change.append(neighbor[0])
+            for neighbor in to_change:
+                change_neighbor_active(neighbor, False)
+
+    t = threading.Thread(target=timeout_function, args=(counter + 1,))
     t.daemon = True
     t.start()
     return(0)
@@ -245,7 +268,7 @@ def change_neighbor(neighbor_to_change, new_value):
                     ignore = True
                 else:
                     new_neighbor = (neighbor_to_change, new_value, 
-                        neighbor_to_change, True)
+                        neighbor_to_change, True, True)
                     neighbors.remove(neighbor)
                     neighbors.append(new_neighbor)
                 break
@@ -253,16 +276,35 @@ def change_neighbor(neighbor_to_change, new_value):
         lock.release()
         return ignore
 
+def change_neighbor_active(neighbor_to_change, t_or_f):
+    global lock
+    global neighbors
+    lock.acquire()
+    try:
+        for neighbor in neighbors:
+            if neighbor[0] == neighbor_to_change and neighbor[3] == True:
+                new_neighbor = (neighbor[0], neighbor[1], 
+                        neighbor[2], neighbor[3], t_or_f)
+                neighbors.remove(neighbor)
+                neighbors.append(new_neighbor)
+                break
+    finally:
+        lock.release()
+
+
 # down the link
 def destroy_neighbor_link(neighbors_link):
     global lock
     global neighbors
     lock.acquire()
     try:
+        print 'reach'
         for neighbor in neighbors:
+            print neighbor[0]
+            print neighbors_link
             if neighbor[0] == neighbors_link:
                 new_neighbor = (neighbor[0], sys.float_info.max, 
-                    neighbor[2], False)
+                    'DOWN', False, False)
                 neighbors.remove(neighbor)
                 neighbors.append(new_neighbor)
                 break
@@ -270,16 +312,16 @@ def destroy_neighbor_link(neighbors_link):
         lock.release()
 
 # up the link
-def restore_neighbor_link(neighbors_link):
+def restore_neighbor_link(neighbors_link, new_link_value = 0):
     global lock
     global neighbors
     global original_neighbors
     lock.acquire()
     try:
         for neighbor in neighbors:
-            if neighbor[0] == neighbors_link:
+            if neighbor[0] == neighbors_link and new_link_value == 0:
                 new_neighbor = (neighbor[0], original_neighbors[neighbors_link], 
-                    neighbor[2], True)
+                    neighbor[0], True, True)
                 neighbors.remove(neighbor)
                 neighbors.append(new_neighbor)
                 break
@@ -293,7 +335,7 @@ def find_neighbor_value(neighbor_to_find):
     for neighbor in neighbors:
         if neighbor[0] == neighbor_to_find:
             return neighbor[1]
-    return float('inf')
+    return sys.float_info.max
 
 # see if link is recorded
 def is_recorded(to_find):
@@ -375,7 +417,7 @@ def main():
             my_dvs.append((dest_cost[0], float(dest_cost[1]), dest_cost[0]))
             # neighbors.append((dest_cost[0], float(dest_cost[1])))
             neighbors.append((dest_cost[0], float(dest_cost[1]), 
-                dest_cost[0], True))
+                dest_cost[0], True, True))
             original_neighbors[dest_cost[0]] = float(dest_cost[1])
 
     # sock_name = socket.gethostbyname(socket.gethostname())
@@ -384,7 +426,7 @@ def main():
     dv_tables[HOSTNAME] = my_dvs
 
     # launch the timeout thread
-    t = threading.Thread(target=timeout_function)
+    t = threading.Thread(target=timeout_function, args=(1,))
     t.daemon = True
     t.start()
 
@@ -458,7 +500,7 @@ def main():
             dead = True
 
             for dv in my_dvs:
-                thread_close_host()
+                destroy_neighbor_link(dv[0])
 
         elif user_input[0] == 'LINKUP':
 
@@ -490,12 +532,12 @@ def main():
                         value=float(user_input[3])))
             else:
                 print 'The host you entered is not your neighbor.'
-        elif user_input[0] == 'table':
-            print dv_tables
-        elif user_input[0] == 'neighbors':
-            print neighbors
-
-
+        # elif user_input[0] == 'table':
+        #     print dv_tables
+        # elif user_input[0] == 'neighbors':
+        #     print neighbors
+        # elif user_input[0] == 'is_dead':
+        #     print dead
 
 # ^C terminate gracefully
 def ctrl_c_handler(signum, frame):
