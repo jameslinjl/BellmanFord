@@ -1,3 +1,10 @@
+'''
+James Lin
+jl3782
+CSEE 4119 - Computer Networks
+Programming Assignment 2
+'''
+
 class RTPacket:
     'packets that can be sent back and forth'
 

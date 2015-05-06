@@ -1,3 +1,10 @@
+'''
+James Lin
+jl3782
+CSEE 4119 - Computer Networks
+Programming Assignment 2
+'''
+
 import socket
 import signal
 import sys
@@ -29,7 +36,6 @@ HOSTNAME = ''
 
 # update the paths, returns True if paths have actually been changed
 def thread_update_paths():
-    # print 'update paths'
     global lock
     global dv_tables
     global my_dvs
@@ -107,6 +113,8 @@ def handle_recv_packet(data):
 
     try:
         header = struct.unpack('cBBBBHBBBBH', data[:14])
+        name = struct.unpack('16p', data[14:30])
+
         if header[0] == 'T':
             source = (str(header[1]) + '.' + str(header[2]) + '.' + 
                 str(header[3]) + '.' + str(header[4]) + ':' + str(header[5]))
@@ -117,8 +125,8 @@ def handle_recv_packet(data):
                 print 'Packet received'
                 print 'Source = ' + str(source)
                 print 'Destination = ' + str(destination)
-                f = open('copy.pdf', 'ab')
-                f.write(bytes(data[14:]))
+                f = open(name[0], 'ab')
+                f.write(bytes(data[30:]))
                 f.close()
             else:
                 print 'Packet received'
@@ -139,23 +147,34 @@ def handle_recv_packet(data):
                 next_hop = node[2]
                 print 'Next hop = ' + next_hop
                 time.sleep(.05)
-                header = transfer_packet.TransferPacket(source, destination)
-                send_packet(next_hop, bytes(header) + bytes(data[14:]))
+                header = transfer_packet.TransferPacket(source, destination,
+                    name[0])
+                send_packet(next_hop, bytes(header) + bytes(data[30:]))
             return 0
     except Exception:
         pass
 
     # parse the data
-    data_arr = data.split('&')
-    sender = data_arr[0]
-    code = data_arr[1]
+    data_arr = []
+    sender = ''
+    code = ''
+    try:
+        data_arr = data.split('&')
+        sender = data_arr[0]
+        code = data_arr[1]
+    except Exception:
+        return 0
     
     if code == 'ROUTEUPDATE':
         # retrieve the data and get rid of delimeter
         row = data_arr[2].split('/')
         tup_row = []
         for i in range(0, len(row)-1):
-            result = eval(row[i])
+            result = ()
+            try:
+                result = eval(row[i])
+            except Exception:
+                result = (row[i][0], float('inf'), row[i][2])
             if type(result) is tuple:
                 tup_row.append(result)
 
@@ -175,8 +194,7 @@ def handle_recv_packet(data):
                         custom_dvs.append((dv[0], sys.float_info.max, dv[2]))
                     else:
                         custom_dvs.append(dv)
-
-                # print 'send ROUTEUPDATE'        
+      
                 send_packet(neighbor[0], 
                     rt_packet.RTPacket('ROUTEUPDATE', HOSTNAME, custom_dvs))
 
@@ -189,15 +207,6 @@ def handle_recv_packet(data):
 
     if code == 'LINKUP':
         restore_neighbor_link(sender)
-
-    # if code == 'TRANSFER':
-    #     data_arr.reverse()
-    #     data_arr.pop()
-    #     data_arr.pop()
-    #     data_arr.pop()
-    #     b_data = bytes(''.join(data_arr))
-    #     f = open('copy.txt', 'ab+')
-    #     f.write(b_data)
 
     return 0
 
@@ -443,6 +452,7 @@ def main():
 
     is_first_line = True
     port = 0
+    ip = socket.gethostbyname(socket.gethostname())
 
     # uses the config file to set up the node
     for line in config_file:
@@ -451,7 +461,7 @@ def main():
             is_first_line = False
             port_timeout = line.split()
             port = int(port_timeout[0])
-            ip_port = ('', int(port_timeout[0]))
+            ip_port = (ip, int(port_timeout[0]))
             TIMEOUT = int(port_timeout[1])
         else:
             dest_cost = line.split()
@@ -461,8 +471,8 @@ def main():
                 dest_cost[0], True, True))
             original_neighbors[dest_cost[0]] = float(dest_cost[1])
 
-    # sock_name = socket.gethostbyname(socket.gethostname())
-    HOSTNAME = '127.0.0.1' + ':' + str(port)
+    
+    HOSTNAME = ip + ':' + str(port)
 
     dv_tables[HOSTNAME] = my_dvs
 
@@ -579,6 +589,10 @@ def main():
                 print 'format: TRANSFER <file name> <IP address> <local port>'
                 continue
 
+            if len(user_input[1]) > 16:
+                print 'Keep file name less than 15 characters please.'
+                continue
+
             # find the right node
             destination = user_input[2] + ':' + user_input[3]
             node = ()
@@ -603,7 +617,7 @@ def main():
                     data=f.read(2048)
                     if not data: break
                     header = transfer_packet.TransferPacket(HOSTNAME, 
-                        destination)
+                        destination, user_input[1])
                     send_packet(next_hop, bytes(header) + bytes(data))
             print 'File sent successfully'
 
