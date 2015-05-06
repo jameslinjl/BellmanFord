@@ -62,11 +62,14 @@ def thread_update_paths():
                     updated = True
                 else:
                     # see what the potential path cost is
-                    
                     for node in dv_tables[HOSTNAME]:
+
+                        # check neighbors paths first
                         original_cost = node[1]
                         min_cost = find_neighbor_value(node[0])
                         min_step = node[0]
+
+                        # check other possible paths
                         for other_path in dv_tables[HOSTNAME]:
                             if other_path[0] == node[0]:
                                 continue
@@ -74,6 +77,8 @@ def thread_update_paths():
                                 other_table = dv_tables[other_path[0]]
                             except Exception:
                                 continue
+
+                            # go through alternate routes
                             for alt in other_table:
                                 cost = (find_neighbor_value(other_path[0]) + 
                                     alt[1])
@@ -83,6 +88,7 @@ def thread_update_paths():
 
                         is_down = (min_cost >= sys.float_info.max)
 
+                        # make sure it's clear if there is a change
                         if original_cost != min_cost and not is_down:
                             updated = True
                             dv_tables[HOSTNAME].remove(node)
@@ -118,15 +124,18 @@ def handle_recv_packet(data):
     global dv_tables
 
     try:
+        # remove the header bytes
         header = struct.unpack('cBBBBHBBBBH', data[:14])
         name = struct.unpack('16p', data[14:30])
 
+        # make sure it's a transfer file
         if header[0] == 'T':
             source = (str(header[1]) + '.' + str(header[2]) + '.' + 
                 str(header[3]) + '.' + str(header[4]) + ':' + str(header[5]))
             destination = (str(header[6]) + '.' + str(header[7]) + '.' + 
                 str(header[8]) + '.' + str(header[9]) + ':' + str(header[10]))
 
+            # if we have arrived, start writing
             if destination == HOSTNAME:
                 print 'Packet received'
                 print 'Source = ' + str(source)
@@ -150,6 +159,7 @@ def handle_recv_packet(data):
                     print 'This node is not reachable. Packet dropped.'
                     return 0
 
+                # send on its way
                 next_hop = node[2]
                 print 'Next hop = ' + next_hop
                 time.sleep(.05)
@@ -184,6 +194,7 @@ def handle_recv_packet(data):
             if type(result) is tuple:
                 tup_row.append(result)
 
+        # perform all necessary changes
         change_neighbor_active(sender, True, True)
         thread_update_dv_tables(sender, tup_row)
         updated = thread_update_paths()
@@ -200,7 +211,6 @@ def handle_recv_packet(data):
                         custom_dvs.append((dv[0], sys.float_info.max, dv[2]))
                     else:
                         custom_dvs.append(dv)
-                # print 'ROUTEUPDATE'
                 send_packet(neighbor[0], 
                     rt_packet.RTPacket('ROUTEUPDATE', HOSTNAME, custom_dvs))
 
@@ -259,7 +269,6 @@ def timeout_function(counter):
                     custom_dvs.append((dv[0], sys.float_info.max, dv[2]))
                 else:
                     custom_dvs.append(dv)
-            # print 'ROUTEUPDATE'
             send_packet(neighbor[0], 
                 rt_packet.RTPacket('ROUTEUPDATE', HOSTNAME, custom_dvs))
 
@@ -296,26 +305,7 @@ def send_packet(destination, packet):
     sock.sendto(str(packet), (dest_ip_port[0], int(dest_ip_port[1])))
     sock.close()
 
-
-# changes a dv to a certain value, avoids race conditions
-def thread_change_dv(dv_to_change, new_value, new_link=''):
-    global lock
-    global my_dvs
-    lock.acquire()
-    try:
-        for dv in my_dvs:
-            if dv[0] == dv_to_change:
-                new_dv = ()
-                if new_link == '':
-                    new_dv = (dv_to_change, new_value, dv[2])
-                else:
-                    new_dv = (dv_to_change, new_value, new_link)
-                my_dvs.remove(dv)
-                my_dvs.append(new_dv)
-    finally:
-        lock.release()
-
-# actual neighbors
+# change neighbor value
 def change_neighbor(neighbor_to_change, new_value):
     global lock
     global neighbors
@@ -336,6 +326,7 @@ def change_neighbor(neighbor_to_change, new_value):
         lock.release()
         return ignore
 
+# change the activeness of neighbors
 def change_neighbor_active(neighbor_to_change, t_or_f, resurrect = False):
     global lock
     global neighbors
@@ -462,6 +453,7 @@ def main():
         print 'cannot locate ' + sys.argv[1]
         sys.exit(1)
 
+    # get networking information
     is_first_line = True
     port = 0
     ip = socket.gethostbyname(socket.gethostname())
@@ -478,14 +470,12 @@ def main():
         else:
             dest_cost = line.split()
             my_dvs.append((dest_cost[0], float(dest_cost[1]), dest_cost[0]))
-            # neighbors.append((dest_cost[0], float(dest_cost[1])))
             neighbors.append((dest_cost[0], float(dest_cost[1]), 
                 dest_cost[0], True, True))
             original_neighbors[dest_cost[0]] = float(dest_cost[1])
 
     
     HOSTNAME = ip + ':' + str(port)
-
     dv_tables[HOSTNAME] = my_dvs
 
     # launch the timeout thread
@@ -493,9 +483,7 @@ def main():
     t.daemon = True
     t.start()
 
-    '''
-    UDP sock stuff
-    '''
+    # UDP socket stuff
     try:
         udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         # print 'Socket created'
@@ -510,6 +498,7 @@ def main():
         print 'Bind failed'
         sys.exit()
 
+    # start the listening manager thread
     t = threading.Thread(target=listener_thread)
     t.daemon = True
     t.start()
@@ -518,7 +507,6 @@ def main():
     for neighbor in neighbors:
         send_packet(neighbor[0], rt_packet.RTPacket('LINKUP', HOSTNAME))
 
-    # input loop
     '''
     SHOWRT - shows the routing table
     LINKDOWN - makes link value inf
@@ -551,10 +539,8 @@ def main():
             dv = user_input[1] + ':' + user_input[2]
 
             if in_original(dv):
-                # change_neighbor(dv, sys.float_info.max)
-                # stop sharing updates
+                # down the link
                 destroy_neighbor_link(dv)
-                # send LINKDOWN
                 send_packet(dv, rt_packet.RTPacket('LINKDOWN', HOSTNAME))
             else:
                 print 'The host you entered is not your neighbor.'
@@ -636,10 +622,6 @@ def main():
                         destination, user_input[1])
                     send_packet(next_hop, bytes(header) + bytes(data))
             print 'File sent successfully'
-        elif user_input[0] == 'neighbors':
-            print neighbors
-        elif user_input[0] == 'table':
-            print dv_tables
 
 # ^C terminate gracefully
 def ctrl_c_handler(signum, frame):
