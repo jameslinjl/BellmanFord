@@ -16,7 +16,6 @@ import transfer_packet
 import struct
 from multiprocessing import Lock
 
-# instantiate global variables, values of this host
 '''
 neighbors - the host's one-hop neighbors
 my_dvs - this consists of the host's routing table
@@ -82,11 +81,18 @@ def thread_update_paths():
                                     min_cost = cost
                                     min_step = other_path[0]
 
-                        if original_cost != min_cost:
+                        is_down = (min_cost >= sys.float_info.max)
+
+                        if original_cost != min_cost and not is_down:
                             updated = True
                             dv_tables[HOSTNAME].remove(node)
                             dv_tables[HOSTNAME].append((node[0], min_cost,
                                 min_step))
+                        elif original_cost != min_cost and is_down:
+                            updated = True
+                            dv_tables[HOSTNAME].remove(node)
+                            dv_tables[HOSTNAME].append((node[0], min_cost,
+                                'DOWN'))
                 
     finally:
         lock.release()
@@ -178,7 +184,7 @@ def handle_recv_packet(data):
             if type(result) is tuple:
                 tup_row.append(result)
 
-        restore_neighbor_link(sender)
+        change_neighbor_active(sender, True, True)
         thread_update_dv_tables(sender, tup_row)
         updated = thread_update_paths()
         my_dvs = dv_tables[HOSTNAME]
@@ -194,7 +200,7 @@ def handle_recv_packet(data):
                         custom_dvs.append((dv[0], sys.float_info.max, dv[2]))
                     else:
                         custom_dvs.append(dv)
-      
+                # print 'ROUTEUPDATE'
                 send_packet(neighbor[0], 
                     rt_packet.RTPacket('ROUTEUPDATE', HOSTNAME, custom_dvs))
 
@@ -233,6 +239,7 @@ def timeout_function(counter):
 
     # only send ROUTEUPDATE if alive
     if not dead:
+        # need to destroy these if they fail pulse check
         to_destroy = []
         # send to all neighbors
         for neighbor in neighbors:
@@ -252,7 +259,7 @@ def timeout_function(counter):
                     custom_dvs.append((dv[0], sys.float_info.max, dv[2]))
                 else:
                     custom_dvs.append(dv)
-
+            # print 'ROUTEUPDATE'
             send_packet(neighbor[0], 
                 rt_packet.RTPacket('ROUTEUPDATE', HOSTNAME, custom_dvs))
 
@@ -329,14 +336,19 @@ def change_neighbor(neighbor_to_change, new_value):
         lock.release()
         return ignore
 
-def change_neighbor_active(neighbor_to_change, t_or_f):
+def change_neighbor_active(neighbor_to_change, t_or_f, resurrect = False):
     global lock
     global neighbors
     lock.acquire()
     try:
         for neighbor in neighbors:
             if neighbor[0] == neighbor_to_change and neighbor[3] == True:
-                new_neighbor = (neighbor[0], neighbor[1], 
+                new_neighbor = ()
+                if resurrect:
+                    new_neighbor = (neighbor[0], neighbor[1], 
+                        neighbor[2], True, t_or_f)
+                else:
+                    new_neighbor = (neighbor[0], neighbor[1], 
                         neighbor[2], neighbor[3], t_or_f)
                 neighbors.remove(neighbor)
                 neighbors.append(new_neighbor)
@@ -486,7 +498,7 @@ def main():
     '''
     try:
         udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        print 'Socket created'
+        # print 'Socket created'
     except socket.error:
         print 'Failed to create socket'
         sys.exit()    
@@ -501,6 +513,10 @@ def main():
     t = threading.Thread(target=listener_thread)
     t.daemon = True
     t.start()
+
+    # send LINKUP at start to your neighbors
+    for neighbor in neighbors:
+        send_packet(neighbor[0], rt_packet.RTPacket('LINKUP', HOSTNAME))
 
     # input loop
     '''
@@ -620,6 +636,10 @@ def main():
                         destination, user_input[1])
                     send_packet(next_hop, bytes(header) + bytes(data))
             print 'File sent successfully'
+        elif user_input[0] == 'neighbors':
+            print neighbors
+        elif user_input[0] == 'table':
+            print dv_tables
 
 # ^C terminate gracefully
 def ctrl_c_handler(signum, frame):
