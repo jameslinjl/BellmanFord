@@ -1,11 +1,3 @@
-# create a host, to_string is IP address, port tuple
-# read in from config file
-# host has udp socket
-# host has a list of <dest, cost> tuples as distance vectors
-# need to update distance vectors
-# poison reverse
-# timeout, needs to be multi-threaded
-
 import socket
 import signal
 import sys
@@ -13,6 +5,8 @@ import datetime
 import time
 import threading
 import rt_packet
+import transfer_packet
+import struct
 from multiprocessing import Lock
 
 # instantiate global variables, values of this host
@@ -111,6 +105,46 @@ def handle_recv_packet(data):
     global my_dvs
     global dv_tables
 
+    try:
+        header = struct.unpack('cBBBBHBBBBH', data[:14])
+        if header[0] == 'T':
+            source = (str(header[1]) + '.' + str(header[2]) + '.' + 
+                str(header[3]) + '.' + str(header[4]) + ':' + str(header[5]))
+            destination = (str(header[6]) + '.' + str(header[7]) + '.' + 
+                str(header[8]) + '.' + str(header[9]) + ':' + str(header[10]))
+
+            if destination == HOSTNAME:
+                print 'Packet received'
+                print 'Source = ' + str(source)
+                print 'Destination = ' + str(destination)
+                f = open('copy.pdf', 'ab')
+                f.write(bytes(data[14:]))
+                f.close()
+            else:
+                print 'Packet received'
+                print 'Source = ' + str(source)
+                print 'Destination = ' + str(destination)
+
+                node = ()
+                for element in dv_tables[HOSTNAME]:
+                    if element[0] == destination:
+                        node = element
+                        break
+
+                # only finite costs
+                if node[1] >= sys.float_info.max:
+                    print 'This node is not reachable. Packet dropped.'
+                    return 0
+
+                next_hop = node[2]
+                print 'Next hop = ' + next_hop
+                time.sleep(.05)
+                header = transfer_packet.TransferPacket(source, destination)
+                send_packet(next_hop, bytes(header) + bytes(data[14:]))
+            return 0
+    except Exception:
+        pass
+
     # parse the data
     data_arr = data.split('&')
     sender = data_arr[0]
@@ -156,6 +190,15 @@ def handle_recv_packet(data):
     if code == 'LINKUP':
         restore_neighbor_link(sender)
 
+    # if code == 'TRANSFER':
+    #     data_arr.reverse()
+    #     data_arr.pop()
+    #     data_arr.pop()
+    #     data_arr.pop()
+    #     b_data = bytes(''.join(data_arr))
+    #     f = open('copy.txt', 'ab+')
+    #     f.write(b_data)
+
     return 0
 
 # manager thread 
@@ -164,7 +207,8 @@ def listener_thread():
 
     while True:
         d = udp_sock.recvfrom(4096)
-        data = d[0]
+        data = bytes(d[0])
+        addr = d[1]
         server = threading.Thread(target=handle_recv_packet, args=(data,))
         server.start()
 
@@ -298,10 +342,7 @@ def destroy_neighbor_link(neighbors_link):
     global neighbors
     lock.acquire()
     try:
-        print 'reach'
         for neighbor in neighbors:
-            print neighbor[0]
-            print neighbors_link
             if neighbor[0] == neighbors_link:
                 new_neighbor = (neighbor[0], sys.float_info.max, 
                     'DOWN', False, False)
@@ -532,12 +573,39 @@ def main():
                         value=float(user_input[3])))
             else:
                 print 'The host you entered is not your neighbor.'
-        # elif user_input[0] == 'table':
-        #     print dv_tables
-        # elif user_input[0] == 'neighbors':
-        #     print neighbors
-        # elif user_input[0] == 'is_dead':
-        #     print dead
+        elif user_input[0] == 'TRANSFER':
+
+            if len(user_input) != 4:
+                print 'format: TRANSFER <file name> <IP address> <local port>'
+                continue
+
+            # find the right node
+            destination = user_input[2] + ':' + user_input[3]
+            node = ()
+            for element in dv_tables[HOSTNAME]:
+                if element[0] == destination:
+                    node = element
+                    break
+
+            # only finite costs
+            if node[1] >= sys.float_info.max:
+                print 'This node is not reachable'
+                continue
+
+            next_hop = node[2]
+            print 'Next hop = ' + next_hop
+
+            # start sending the data
+            with open(user_input[1],'rb') as f:
+                while True:
+                    # needs a bit of time to not flood 
+                    time.sleep(.05)
+                    data=f.read(2048)
+                    if not data: break
+                    header = transfer_packet.TransferPacket(HOSTNAME, 
+                        destination)
+                    send_packet(next_hop, bytes(header) + bytes(data))
+            print 'File sent successfully'
 
 # ^C terminate gracefully
 def ctrl_c_handler(signum, frame):
